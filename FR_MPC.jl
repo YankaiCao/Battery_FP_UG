@@ -9,12 +9,9 @@ include("setup.jl")
 
     
 nHours_Horizon = 1
-function OptimalControl(u0, t_start, soc_min, soc_max)
+function OptimalControl(u0,  signal_segment,  FR_price_segment, grid_price_segment, soc_min, soc_max)
     Totaltime_Horizon = nHours_Horizon*60*60                                     # seconds
     Nt_FR_Horizon = round(Int, Totaltime_Horizon/dt_FR)+1           		 # number of FR time step
-    Nt_FR_start = round(Int, t_start/dt_FR)
-    nHours_start = round(Int, t_start/3600)
-
     TIME_FR = 0:dt_FR:Totaltime_Horizon
     expectedrevenue = 241407*P_nominal/1000	   # 241407, 409723
 
@@ -34,15 +31,15 @@ function OptimalControl(u0, t_start, soc_min, soc_max)
     TIMEGm = 1:Nt-1                        	   # set of temporal grid points minus 1
     mTIMEG = 2:Nt                          	   # set of temporal grid points except 1
 
-    m = Model(solver=IpoptSolver(print_level = 0, linear_solver = "ma27", max_cpu_time = 600.0))      	 #default linear solver mumps  , linear_solver = "ma27",
+    m = Model(solver=IpoptSolver(print_level = 0, max_cpu_time = 300.0))      	 #default linear solver mumps  , linear_solver = "ma27",
     @variable(m, 0<=FR_band[h in 1:nHours_Horizon]<=P_nominal*maxC)        	         #kw
     @variable(m, -P_nominal*maxC<=buy_from_grid[h in 1:nHours_Horizon]<=P_nominal*maxC)  #kw
-    @variable(m, power[i in 1:Nt_FR_Horizon], start= signal[Nt_FR_start + i]*P_nominal*3 )
-    @constraint(m, [i in 1:Nt_FR_Horizon], power[i] ==  signal[Nt_FR_start + i]*FR_band[max(1, Int(ceil(TIME_FR[i]/3600)))] + buy_from_grid[max(1, Int(ceil(TIME_FR[i]/3600)))])
+    @variable(m, power[i in 1:Nt_FR_Horizon], start= signal_segment[i]*P_nominal*3 )
+    @constraint(m, [i in 1:Nt_FR_Horizon], power[i] ==  signal_segment[i]*FR_band[max(1, Int(ceil(TIME_FR[i]/3600)))] + buy_from_grid[max(1, Int(ceil(TIME_FR[i]/3600)))])
 
     it0 = zeros(Nt)
     for i = 1:Nt
-    	it0[i] = signal[Int(ceil((t_start+i*dt)/dt_FR))]*P_nominal*3/3.3
+    	it0[i] = signal_segment[Int(ceil((i*dt)/dt_FR))]*P_nominal*3/3.3
     end
 
     theta_p_guess = min(0.9, csp_avg0/cspmax)
@@ -158,19 +155,19 @@ function OptimalControl(u0, t_start, soc_min, soc_max)
 
     @variable(m, 0<=buy_from_grid_plus[h in 1:nHours_Horizon]<=P_nominal*maxC)
     @constraint(m, [h in 1:nHours_Horizon], buy_from_grid_plus[h] >= buy_from_grid[h])
-    @objective(m, :Min, -sum(FR_band[h]* FR_price[nHours_start+h] for h in 1:nHours_Horizon) + sum(buy_from_grid_plus[h]*grid_price[nHours_start+h] for h in 1:nHours_Horizon) + 
+    @objective(m, :Min, -sum(FR_band[h]* FR_price_segment[h] for h in 1:nHours_Horizon) + sum(buy_from_grid_plus[h]*grid_price_segment[h] for h in 1:nHours_Horizon) + 
     		expectedrevenue/(1-capacity_retire) * (cf[Nt]-cf0)/Qmax)
 
     status = JuMP.solve(m)
 
-    println("FR_price:  ", FR_price[nHours_start+1])
+    println("FR_price:  ", FR_price_segment[1])
     println("FR_band:  ",getvalue(FR_band[1]))
     println("buy_from_grid:  ",getvalue(buy_from_grid[1]))
     println("buy_from_grid_plus:  ",getvalue(buy_from_grid_plus[1]))
 
 
-    println("revenue   ", FR_price[nHours_start+1]*getvalue(FR_band[1]))
-    println("cost      ", getvalue(buy_from_grid_plus[1])*grid_price[nHours_start+1])
+    println("revenue   ", FR_price_segment[1]*getvalue(FR_band[1]))
+    println("cost      ", getvalue(buy_from_grid_plus[1])*grid_price[1])
     println("penalty   ", expectedrevenue/(1-capacity_retire) * (getvalue(cf[Nt])-cf0)/Qmax)
 
     println("capacity fade:  ",(getvalue(cf[Nt])-cf0)/Qmax)
@@ -179,7 +176,7 @@ function OptimalControl(u0, t_start, soc_min, soc_max)
     grid_band = getvalue(buy_from_grid)[1]
     if status != :Optimal                       
         FR_band = 3*P_nominal 			               
-	power_next = P_nominal*soc0 + FR_band*mean(signal[Nt_FR_start+1:Nt_FR_start+Nt_FR_Horizon])                      	
+	power_next = P_nominal*soc0 + FR_band*mean(signal_segment[1:Nt_FR_Horizon])                      	
         if power_next <= P_nominal*capacity_remain*soc_min
             grid_band = (P_nominal*capacity_remain*soc_min - power_next)/nHours_Horizon        
         elseif power_next >= P_nominal*capacity_remain*soc_max

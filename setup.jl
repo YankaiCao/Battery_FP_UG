@@ -269,110 +269,36 @@ u0[Ncp+Ncn+Nsei+8] = 0              	#cf
 
 
 
-function MPC(u0)
-    println("MPC start")
-    tic()
-    i_start = 1
-    i_end = 1
-    FR_band_list = zeros(TotalHours)
-    buy_from_grid = zeros(TotalHours)
-    capacity_remain_list = ones(TotalHours)
-    soc_list = ones(TotalHours)
-    status_list = ones(TotalHours)
+function simulation(TIME_FR_segment, signal_segment, FR_band, grid_band, u0)
+	   TIME_FR_segment = 0:dt_FR:3600
+	   P_FR_segment = signal_segment*FR_band + grid_band
+           cf0 = u0[Ncp+Ncn+Nsei+8]
+           fade = cf0/Qmax
+           capacity_remain = 1 - fade
+	   du0 = zeros(Ncp+Ncn+4+Nsei+Ncum)
+	   tspan = (float(TIME_FR_segment[1]), float(TIME_FR_segment[end]))			     
+           itp = interpolate((TIME_FR_segment,), P_FR_segment, Gridded(Linear()))
+           function stop_cond(u,t,integrator)
+               csn_avg = u[Ncp+1]
+               soc_in = csn_avg/csnmax
+               min_stop = capacity_remain*soc_min_stop
+               max_stop = capacity_remain*soc_max_stop
 
-    retire_time = Totaltime
-    retire_index = Nt_FR
-    TIME_FR_segment = Int64[]
-    P_FR_segment = Float64[]
-    TIME_FR_list = []
-    for i_start in 1:Nt_FR_hour:(Nt_FR-Nt_FR_hour)
-        i_end = i_start + Nt_FR_hour
-        i_start_hour = Int(floor(TIME_FR[i_start]/3600))+1
-        du0 = zeros(Ncp+Ncn+4+Nsei+Ncum)
-        cf0 = u0[Ncp+Ncn+Nsei+8]
-        fade = cf0/Qmax
-        capacity_remain = 1 - fade
-        csn_avg = u0[Ncp+1]
-        soc = csn_avg/csnmax
-        capacity_remain_list[i_start_hour] = capacity_remain
-        soc_list[i_start_hour] = soc
+               if t<=50
+                   return (min_stop + max_stop)/2
+               end
 
-
-        if capacity_remain <= capacity_retire
-            retire_time = TIME_FR[i_start]
-            retire_index = i_start
-	    filename = string("Result/FR_MPC/Min", soc_min, "MPC","Horizon",nHours_Horizon, "year",year, ".jld")
-            save(filename, "retire_time",retire_time,  "FR_band_list",FR_band_list, "buy_from_grid",buy_from_grid, "capacity_remain_list", capacity_remain_list, "soc_list", soc_list, "status_list", status_list)
-            break
-        end
-       	FR_band, grid_band, status = OptimalControl(u0, TIME_FR[i_start], soc_min, soc_max)
-	status_list[i_start_hour] = 1 #optimal
-	if status != :Optimal
-	    status_list[i_start_hour] = 0
-	end    
-
-	#### Simulate with the optimal FR_band, grid_band
-	soc_stop = true
-        while soc_stop
-            TIME_FR_segment = TIME_FR[i_start:i_end]
-	    P_FR_segment = signal[i_start:i_end]*FR_band + grid_band
-
-	    #=
-            band_too_large = false
-            level = soc
-            for k = 1:(i_end-i_start)
-                level += P_FR_segment[k]*dt_FR/3600/P_nominal
-                if level <= soc_min_stop || level >= soc_max_stop
-                    band_too_large = true
-                    break;
-                end
-            end
-            if band_too_large
-                if FR_band >= P_nominal
-                    FR_band = FR_band - P_nominal/2
-                else
-                    FR_band = FR_band/2
-                end
-                power_next = P_nominal*soc + FR_band*mean(signal[i_start:i_end])
-                if power_next <= P_nominal*capacity_remain*soc_min
-                    grid_band = P_nominal*capacity_remain*soc_min - power_next
-                elseif power_next >= P_nominal*capacity_remain*soc_max
-                    grid_band = P_nominal*capacity_remain*soc_max -  power_next
-                else
-                    grid_band = 0
-                end
-                println("band_too_large, update FR_band to  ", FR_band, "   grid_band to  ", grid_band)
-                continue
-            end
-	    =#
-
-            tspan = (float(TIME_FR_segment[1]), float(TIME_FR_segment[end]))
-            println("P_FR_segment   ", P_FR_segment[1], "   ",P_FR_segment[end])
-            println("TIME_FR_segment (day)  ", TIME_FR_segment[1]/3600/24,"    ",TIME_FR_segment[end]/3600/24)
-            itp = interpolate((TIME_FR_segment,), P_FR_segment, Gridded(Linear()))
+               if soc_in >= (min_stop + max_stop)/2
+                   return (max_stop - soc_in)
+               else
+                   return (soc_in - min_stop)
+               end
+           end
+           affect!(integrator) = terminate!(integrator)
+           cb = ContinuousCallback(stop_cond,affect!, rootfind = true, interp_points=100)
 
 
-            function stop_cond(u,t,integrator)
-	    	csn_avg = u[Ncp+1]
-                soc_in = csn_avg/csnmax
-                min_stop = capacity_remain*soc_min_stop
-                max_stop = capacity_remain*soc_max_stop
-
-                if t<=50
-                    return (min_stop + max_stop)/2
-		end
-
-                if soc_in >= (min_stop + max_stop)/2
-                    return (max_stop - soc_in)
-                else
-                    return (soc_in - min_stop)
-                end
-            end
-            affect!(integrator) = terminate!(integrator)
-            cb = ContinuousCallback(stop_cond,affect!, rootfind = true, interp_points=100)
-
-
-            function f_FR(out,du,u,param,t)
+           function f_FR(out,du,u,param,t)
                 p_to_battery = itp[t]
                 it = u[Ncp+Ncn+5]
                 phi_p = u[Ncp+Ncn+2]
@@ -399,18 +325,79 @@ function MPC(u0)
             sol = DifferentialEquations.solve(prob, IDA(), callback=cb)
             csn_avg = (sol[end])[Ncp+1]
             soc_end = csn_avg/csnmax
+            state_end = sol[end]
+	    simulation_status = true
+	    if sol.t[end] != tspan[end]
+	        simulation_status = false
+	    end
+	    return soc_end, state_end, simulation_status
+end
 
+
+function MPC(u0)
+    println("MPC start")
+    tic()
+    i_start = 1
+    i_end = 1
+    FR_band_list = zeros(TotalHours)
+    buy_from_grid = zeros(TotalHours)
+    capacity_remain_list = ones(TotalHours)
+    soc_list = ones(TotalHours)
+    status_list = ones(TotalHours)
+
+    retire_time = Totaltime
+    retire_index = Nt_FR
+    #TIME_FR_segment = Int64[]
+    #P_FR_segment = Float64[]
+    TIME_FR_list = []
+    for i_start in 1:Nt_FR_hour:(Nt_FR-Nt_FR_hour)
+        i_end = i_start + Nt_FR_hour
+        i_start_hour = Int(floor(TIME_FR[i_start]/3600))+1
+        cf0 = u0[Ncp+Ncn+Nsei+8]
+        fade = cf0/Qmax
+        capacity_remain = 1 - fade
+        csn_avg = u0[Ncp+1]
+        soc = csn_avg/csnmax
+        capacity_remain_list[i_start_hour] = capacity_remain
+        soc_list[i_start_hour] = soc
+        if capacity_remain <= capacity_retire
+            retire_time = TIME_FR[i_start]
+            retire_index = i_start
+	    filename = string("Result/FR_MPC/Min", soc_min, "MPC","Horizon",nHours_Horizon, "year",year, ".jld")
+            save(filename, "retire_time",retire_time,  "FR_band_list",FR_band_list, "buy_from_grid",buy_from_grid, "capacity_remain_list", capacity_remain_list, "soc_list", soc_list, "status_list", status_list)
+            break
+        end
+
+	signal_segment = signal[i_start:i_end]
+	FR_price_segment = FR_price[i_start_hour:i_start_hour]
+	grid_price_segment = grid_price[i_start_hour:i_start_hour]
+
+	
+       	FR_band, grid_band, status = OptimalControl(u0,  signal_segment,  FR_price_segment, grid_price_segment, soc_min, soc_max)
+	status_list[i_start_hour] = 1 #optimal
+	if status != :Optimal
+	    status_list[i_start_hour] = 0
+	end    
+
+	#### Simulate with the optimal FR_band, grid_band
+	println("TIME_FR_segment (day)  ", TIME_FR[i_start]/3600/24)
+
+
+
+	soc_stop = true
+        while soc_stop
+            TIME_FR_segment = TIME_FR[i_start:i_end]
+	    soc_end, state_end, simulation_status = simulation(TIME_FR_segment, signal_segment, FR_band, grid_band, u0)
 	    # if stop prematurely
-            if sol.t[end] != tspan[end]   || soc_end <= 0.1  || soc_end >= 0.9
-                println("soc too large or small, stop at   ", sol.t[end])
+            if !simulation_status  || soc_end <= 0.1  || soc_end >= 0.9
+                println("soc too large or small")
                 if FR_band >= P_nominal
                     FR_band = FR_band - P_nominal/2
                 else
                     FR_band = FR_band/2
                 end
 
-                power_next = P_nominal*soc + FR_band*mean(signal[i_start:i_end])
-		println("mean signal   ", mean(signal[i_start:i_end]), "    power_next    ",power_next, " soc  ",soc, "   ", P_nominal*soc, "    ",FR_band*mean(signal[i_start:i_end]))
+                power_next = P_nominal*soc + FR_band*mean(signal_segment)
                 if power_next <= P_nominal*capacity_remain*soc_min
                     grid_band = P_nominal*capacity_remain*soc_min - power_next
                 elseif power_next >= P_nominal*capacity_remain*soc_max
@@ -421,7 +408,7 @@ function MPC(u0)
             else
                 FR_band_list[i_start_hour] = FR_band
                 buy_from_grid[i_start_hour] = grid_band
-                u0 = sol[end]
+                u0 = state_end
                 soc_stop = false
             end
         end
