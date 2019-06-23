@@ -363,7 +363,7 @@ function MPC(u0)
         if capacity_remain <= capacity_retire
             retire_time = TIME_FR[i_start]
             retire_index = i_start
-	    filename = string("Result/FR_MPC/Min", soc_min, "MPC","Horizon",nHours_Horizon, "year",year, ".jld")
+	    filename = string("Result/FR_MPC/Min", soc_min, "MPC","Horizon",nHours_Horizon, ".jld")
             save(filename, "retire_time",retire_time,  "FR_band_list",FR_band_list, "buy_from_grid",buy_from_grid, "capacity_remain_list", capacity_remain_list, "soc_list", soc_list, "status_list", status_list)
             break
         end
